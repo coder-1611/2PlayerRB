@@ -62,19 +62,25 @@
     // Show connecting UI immediately
     showOverlay(
       '<h2>CONNECTING...</h2>' +
-      '<p id="mp-status">Waking up server (may take ~30s on first connect)...</p>' +
+      '<p id="mp-status">Waking up server...</p>' +
       '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
     );
 
+    // Wake the server via HTTP first (Render free tier spins down)
+    var httpUrl = SERVER_URL.replace('wss://', 'https://').replace('ws://', 'http://');
+    fetch(httpUrl + '/health').catch(function () {});
+
     var retries = 0;
-    var maxRetries = 3;
+    var maxRetries = 10;
 
     function tryConnect() {
+      if (MP.gamePhase === 'idle') return; // user cancelled
+      showStatus('Connecting... (' + (retries + 1) + '/' + maxRetries + ')');
+
       MP.ws = new WebSocket(SERVER_URL);
       MP.ws.binaryType = 'blob';
 
       MP.ws.onopen = function () {
-        // Keepalive every 25s
         MP.pingInterval = setInterval(function () { sendJSON({ type: 'ping' }); }, 25000);
         if (callback) callback();
       };
@@ -92,19 +98,19 @@
       MP.ws.onclose = function () {
         clearInterval(MP.pingInterval);
         if (MP.gamePhase === 'idle' || MP.gamePhase === 'finished') return;
-        if (MP.gamePhase === 'lobby' && retries < maxRetries) {
+        if (retries < maxRetries) {
           retries++;
-          showStatus('Retrying... (' + retries + '/' + maxRetries + ')');
           setTimeout(tryConnect, 3000);
-        } else if (MP.gamePhase !== 'idle') {
-          showStatus('Disconnected. Reconnecting...');
-          setTimeout(tryConnect, 3000);
+        } else {
+          showOverlay(
+            '<h2>CONNECTION FAILED</h2>' +
+            '<p>Could not reach the server. Try again later.</p>' +
+            '<button class="mp-btn" onclick="MP.backToMenu()">BACK</button>'
+          );
         }
       };
 
-      MP.ws.onerror = function () {
-        // onclose will fire after this
-      };
+      MP.ws.onerror = function () {};
     }
 
     tryConnect();
