@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta http-equiv="X-Frame-Options" content="DENY" />
+    <meta http-equiv="pragma" content="no-cache" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta charset="utf-8" />
+    <link rel="icon" href="img/icon.jpg">
+    <title>2 Player Retro Bowl</title>
+    <link rel="stylesheet" href="multiplayer.css" />
+
+    <style>
+        body {
+            background: #000;
+            color: #cccccc;
+            margin: 0px;
+            padding: 0px;
+            border: 0px;
+        }
+
+        canvas {
+            image-rendering: optimizeSpeed;
+            -webkit-interpolation-mode: nearest-neighbor;
+            -ms-touch-action: none;
+            margin: 0px;
+            padding: 0px;
+            border: 0px;
+        }
+
+        :-webkit-full-screen #canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        div.gm4html5_div_class {
+            margin: 0px;
+            padding: 0px;
+            border: 0px;
+        }
+
+        /* START - Login Dialog Box */
+        div.gm4html5_login {
+            padding: 20px;
+            position: absolute;
+            border: solid 2px #000000;
+            background-color: #404040;
+            color: #00ff00;
+            border-radius: 15px;
+            box-shadow: #101010 20px 20px 40px;
+        }
+
+        div.gm4html5_cancel_button {
+            float: right;
+        }
+
+        div.gm4html5_login_button {
+            float: left;
+        }
+
+        div.gm4html5_login_header {
+            text-align: center;
+        }
+
+        /* END - Login Dialog Box */
+        :-webkit-full-screen {
+            width: 100%;
+            height: 100%;
+        }
+
+        .cheat-btn {
+            position: fixed;
+            z-index: 9999;
+            background: #1a1a2e;
+            color: #e94560;
+            border: 2px solid #e94560;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            opacity: 0.85;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .cheat-btn:hover {
+            opacity: 1;
+            transform: scale(1.05);
+        }
+        #credits-btn {
+            top: 38px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #credits-btn:hover {
+            transform: translateX(-50%) scale(1.05);
+        }
+        #max-btn {
+            top: 38px;
+            right: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="gm4html5_div_class" id="gm4html5_div_id">
+        <img src="splash.png" id="GM4HTML5_loadingscreen" alt="GameMaker:HTML5 loading screen"
+            style="display: none;" />
+        <canvas id="canvas" width="853" height="480">
+            <p>Your browser doesn't support HTML5 canvas.</p>
+        </canvas>
+    </div>
+
+    <button id="credits-btn" class="cheat-btn" title="Set Coaching Credits">CC: ---</button>
+    <button id="max-btn" class="cheat-btn" title="Max All Players">MAX</button>
+
+    <script type="text/javascript" src="retrobowl.js"></script>
+    <script type="text/javascript" src="multiplayer.js"></script>
+
+    <script>
+        (function () {
+            var creditsBtn = document.getElementById('credits-btn');
+            var maxBtn = document.getElementById('max-btn');
+
+            // Load saved preferences
+            var cheatsOn = localStorage.getItem('rb_cheats_on') !== 'false';
+
+            function applyPrefs() {
+                creditsBtn.style.display = cheatsOn ? '' : 'none';
+                maxBtn.style.display = cheatsOn ? '' : 'none';
+                localStorage.setItem('rb_cheats_on', cheatsOn);
+            }
+            applyPrefs();
+
+            // Hook into button_med_slim draw to draw our cheats button on options screen
+            var hooked = false;
+            var CHEATS_BTN = { x: 392, y: 168, w: 80, h: 28, sprite: 166 };
+
+            function hookButtonDraw() {
+                if (hooked) return;
+                try {
+                    // Find obj_button_med_slim in the object type registry and patch its draw function
+                    var objDefs = _Ec2._UX3;
+                    for (var i = 0; i < objDefs.length; i++) {
+                        var def = objDefs[i];
+                        if (def && def._fE2 === 'obj_button_med_slim') {
+                            hooked = true;
+                            var origDraw = def._j2;
+                            var lastDrawFrame = -1;
+
+                            def._j2 = function (inst, t) {
+                                origDraw(inst, t);
+
+                                try {
+                                    var frame = _ft._ZB();
+                                    if (frame === lastDrawFrame) return;
+                                    if (_ft._gt() !== 18) return;
+                                    lastDrawFrame = frame;
+
+                                    var spr = CHEATS_BTN.sprite;
+                                    var bx = CHEATS_BTN.x;
+                                    var by = CHEATS_BTN.y;
+
+                                    // Get sprite size
+                                    var sprObj = _Te2._Ue2(spr);
+                                    if (sprObj && sprObj._53 && sprObj._53[0]) {
+                                        CHEATS_BTN.w = sprObj._53[0]._J52;
+                                        CHEATS_BTN.h = sprObj._53[0]._K52;
+                                    }
+
+                                    // Draw exactly like game buttons do in _23/_I2:
+                                    // Shadow behind button
+                                    _mh1(inst, spr, 2, bx + 2, by + 2, 1, 1, 0, 4210752, 0.5);
+                                    // Button base sprite (sub-image 0)
+                                    _Kh1(inst, spr, 0, bx, by);
+                                    // Color overlay (sub-image 2 with button tint)
+                                    var tint = inst._po || 4294967295;
+                                    _mh1(inst, spr, 2, bx, by, 1, 1, 0, tint, 1);
+
+                                    // Text
+                                    _gh1(1);
+                                    _hh1(1);
+                                    var cx = bx + CHEATS_BTN.w / 2 + 1;
+                                    var cy = by + CHEATS_BTN.h / 2 - 1;
+                                    _nh1(cx, cy, cheatsOn ? 'ON' : 'OFF');
+
+                                    // Label to the left
+                                    _hh1(2);
+                                    _nh1(bx - 4, cy, 'CHEATS');
+                                    _hh1(0);
+                                } catch (ex) {}
+                            };
+                            break;
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            // Intercept canvas clicks
+            var canvas = document.getElementById('canvas');
+            canvas.addEventListener('click', function (e) {
+                try {
+                    if (_ft._gt() !== 18) return;
+                    var rect = canvas.getBoundingClientRect();
+                    var gameX = ((e.clientX - rect.left) / rect.width) * 480;
+                    var gameY = ((e.clientY - rect.top) / rect.height) * 270;
+                    if (gameX >= CHEATS_BTN.x && gameX <= CHEATS_BTN.x + CHEATS_BTN.w &&
+                        gameY >= CHEATS_BTN.y && gameY <= CHEATS_BTN.y + CHEATS_BTN.h) {
+                        cheatsOn = !cheatsOn;
+                        applyPrefs();
+                        try {
+                            var state = _6E2._Ue2(64);
+                            if (state && _Ai(state._Gn, 'op_soundfx')) _8z(5, 1, 0);
+                        } catch (ex) {}
+                    }
+                } catch (ex) {}
+            });
+
+            // Hook once game is loaded
+            setInterval(function () {
+                try {
+                    if (typeof _Ec2 !== 'undefined' && _Ec2._UX3 && _Ec2._UX3.length > 0) hookButtonDraw();
+                } catch (e) {}
+            }, 1000);
+
+            // Game state helper
+            function getState() {
+                try { return _6E2._Ue2(64); } catch (e) { return null; }
+            }
+
+            // Credits button
+            function updateLabel() {
+                var s = getState();
+                if (s && s._9n !== undefined) {
+                    creditsBtn.textContent = 'CC: ' + Math.floor(s._9n);
+                }
+            }
+            creditsBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var s = getState();
+                if (!s) { alert('Game not loaded yet. Start a game first!'); return; }
+                var current = Math.floor(s._9n || 0);
+                var input = prompt('Enter coaching credits amount:', current);
+                if (input !== null && input !== '') {
+                    var val = parseInt(input, 10);
+                    if (!isNaN(val) && val >= 0) {
+                        s._9n = val;
+                        updateLabel();
+                    } else {
+                        alert('Please enter a valid number.');
+                    }
+                }
+            });
+            setInterval(updateLabel, 2000);
+
+            // Max button
+            maxBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var s = getState();
+                if (!s) { alert('Game not loaded yet. Start a game first!'); return; }
+                try {
+                    var rosterList = _dq2._Ue2(s._Ln);
+                    if (!rosterList || !rosterList._oq2) {
+                        alert('No roster found. Make sure you have a team!');
+                        return;
+                    }
+                    var count = 0;
+                    for (var i = 0; i < rosterList._oq2.length; i++) {
+                        var pid = rosterList._oq2[i];
+                        if (typeof pid === 'object' && pid.Object !== undefined) pid = pid.Object;
+                        var p = _fg2._Ue2(pid);
+                        if (p) {
+                            p['speed'] = 10;
+                            p['strength'] = 10;
+                            p['stamina'] = 10;
+                            p['skill'] = 10;
+                            p['condition'] = 100;
+                            p['attitude'] = 100;
+                            count++;
+                        }
+                    }
+                    maxBtn.textContent = 'MAXED!';
+                    setTimeout(function () { maxBtn.textContent = 'MAX'; }, 1500);
+                } catch (err) {
+                    alert('Error: ' + err.message);
+                }
+            });
+        })();
+    </script>
+
+    <script>
+        (function () {
+            function fin(ok) {
+                (function checkInit() {
+                    var _0x151adb = ["bG9jYWxob3N0", "LnBva2kuY29t", "LnBva2ktZ2RuLmNvbQ=="];
+                    var _0x219654 = true;
+                })();
+                window.PokiSDK_OK = ok;
+                GameMaker_Init();
+            }
+            window.addEventListener("load", function (_) {
+                window.PokiSDK_loadState = 0;
+                if (window.PokiSDK) {
+                    PokiSDK.init()
+                        .then(function () {
+                            fin(true);
+                        })
+                        .catch(function () {
+                            fin(false);
+                        });
+                } else {
+                    window.PokiSDK = null;
+                    fin(false);
+                }
+            });
+        })();
+    </script>
+</body>
+
+</html>

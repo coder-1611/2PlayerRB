@@ -1,0 +1,243 @@
+/* 2PlayerRB Multiplayer Styles — Retro Bowl aesthetic */
+
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+/* Overlay (lobby, game over, etc.) */
+.mp-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(10, 10, 30, 0.95);
+  z-index: 1000;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  text-align: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.mp-overlay h2 {
+  font-size: 22px;
+  color: #e94560;
+  margin: 0 0 10px;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.mp-overlay p {
+  font-size: 11px;
+  color: #ccc;
+  margin: 4px 0;
+  line-height: 1.6;
+}
+
+.mp-big {
+  font-size: 18px !important;
+  color: #fff !important;
+  margin: 12px 0 !important;
+}
+
+/* Buttons */
+.mp-btn {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 12px;
+  padding: 12px 28px;
+  border: 2px solid #e94560;
+  background: #e94560;
+  color: #fff;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.15s;
+  min-width: 200px;
+}
+
+.mp-btn:hover {
+  background: #ff6b81;
+  border-color: #ff6b81;
+  transform: scale(1.05);
+}
+
+.mp-btn:active {
+  transform: scale(0.98);
+}
+
+.mp-btn-secondary {
+  background: transparent;
+  color: #e94560;
+}
+
+.mp-btn-secondary:hover {
+  background: #e94560;
+  color: #fff;
+}
+
+.mp-btn-ready {
+  background: #27ae60;
+  border-color: #27ae60;
+  font-size: 14px;
+  padding: 14px 36px;
+}
+
+.mp-btn-ready:hover {
+  background: #2ecc71;
+  border-color: #2ecc71;
+}
+
+/* Room code display */
+.mp-code {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 32px;
+  color: #f1c40f;
+  background: #1a1a2e;
+  padding: 16px 32px;
+  border: 3px solid #f1c40f;
+  letter-spacing: 8px;
+  margin: 12px 0;
+  text-shadow: 2px 2px 0 #000;
+  user-select: all;
+}
+
+/* Code input */
+.mp-input {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 20px;
+  padding: 12px 20px;
+  background: #1a1a2e;
+  border: 2px solid #e94560;
+  color: #f1c40f;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 6px;
+  width: 220px;
+  outline: none;
+}
+
+.mp-input:focus {
+  border-color: #f1c40f;
+  box-shadow: 0 0 10px rgba(241, 196, 15, 0.3);
+}
+
+/* Scorebar */
+.mp-scorebar {
+  display: none;
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%;
+  background: rgba(10, 10, 30, 0.9);
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 10px;
+  padding: 6px 16px;
+  z-index: 600;
+  justify-content: space-between;
+  align-items: center;
+  box-sizing: border-box;
+  border-bottom: 2px solid #e94560;
+}
+
+.mp-scorebar span {
+  flex: 1;
+  text-align: center;
+}
+
+.mp-scorebar b {
+  color: #f1c40f;
+  font-size: 12px;
+}
+
+/* Turn banner */
+.mp-turn-banner {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(233, 69, 96, 0.95);
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 14px;
+  padding: 20px 40px;
+  z-index: 1100;
+  text-align: center;
+  border: 3px solid #fff;
+  box-shadow: 0 0 30px rgba(233, 69, 96, 0.5);
+  transition: opacity 0.5s;
+}
+
+/* Spectate view */
+.mp-spectate {
+  display: none;
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: #0a0a1e;
+  z-index: 550;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.mp-spectate-label {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 11px;
+  color: #e94560;
+  text-align: center;
+  animation: mp-pulse 1.5s ease-in-out infinite;
+}
+
+.mp-spectate-canvas {
+  width: 853px;
+  height: 480px;
+  border: 2px solid #333;
+  image-rendering: pixelated;
+}
+
+/* TWO PLAYER button on home screen */
+.mp-lobby-btn {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 400;
+  font-size: 11px;
+  padding: 10px 24px;
+  box-shadow: 0 4px 15px rgba(233, 69, 96, 0.4);
+}
+
+/* Final scores */
+.mp-final-scores {
+  display: flex;
+  gap: 40px;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 14px;
+  color: #fff;
+  margin: 16px 0;
+}
+
+.mp-final-scores b {
+  color: #f1c40f;
+  font-size: 18px;
+}
+
+/* Animations */
+@keyframes mp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .mp-spectate-canvas {
+    width: 100%;
+    height: auto;
+  }
+  .mp-overlay h2 { font-size: 16px; }
+  .mp-code { font-size: 24px; letter-spacing: 6px; }
+  .mp-btn { font-size: 10px; padding: 10px 20px; min-width: 160px; }
+}
