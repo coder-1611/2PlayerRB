@@ -118,6 +118,16 @@
     <button id="max-btn" class="cheat-btn" title="Max All Players">MAX</button>
 
     <script type="text/javascript" src="retrobowl.js"></script>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+    <script>
+      firebase.initializeApp({
+        databaseURL: "https://retrobowl-2p-default-rtdb.firebaseio.com"
+      });
+    </script>
+
     <script type="text/javascript" src="multiplayer.js"></script>
 
     <script>

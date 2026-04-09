@@ -1,20 +1,23 @@
 /*
- * 2PlayerRB — Multiplayer module for Retro Bowl
- * Handles WebSocket connection, lobby UI, turn management,
- * canvas streaming, drive detection, and scoreboard.
+ * 2PlayerRB — Multiplayer module for Retro Bowl (Firebase version)
+ * Uses Firebase Realtime Database for room management, turn coordination,
+ * score tracking, and canvas frame streaming.
  */
 (function () {
   'use strict';
 
   // ── Config ──────────────────────────────────────────────
-  // Replace with your Render deployment URL
-  var SERVER_URL = 'wss://twoplayerrb.onrender.com';
-  var FRAME_INTERVAL_MS = 100; // 10 fps
-  var FRAME_QUALITY = 0.45;
+  var FRAME_INTERVAL_MS = 200; // 5 fps for Firebase bandwidth
+  var FRAME_QUALITY = 0.3;
+  var FRAME_WIDTH = 240; // downsample for bandwidth
+  var FRAME_HEIGHT = 135;
+
+  // ── Firebase refs (set after init) ──────────────────────
+  var db = null;
+  var roomRef = null;
 
   // ── State ───────────────────────────────────────────────
   var MP = window.MP = {
-    ws: null,
     roomCode: null,
     playerIndex: -1,
     isMyTurn: false,
@@ -31,158 +34,134 @@
     lastQuarter: -1,
     lastRoom: -1,
     driveStartScore: 0,
-    driveCycleState: 'idle', // idle | human_offense | ai_offense | ready_to_switch
+    driveCycleState: 'idle',
     matchObjPolling: null,
 
     // Frame streaming
     frameInterval: null,
     spectateCanvas: null,
     spectateCtx: null,
+    offscreenCanvas: null,
+    offscreenCtx: null,
 
-    // Keepalive
+    // Firebase listeners
+    listeners: [],
+
     pingInterval: null
   };
 
   // ── Utility ─────────────────────────────────────────────
   function $(id) { return document.getElementById(id); }
 
-  function sendJSON(msg) {
-    if (MP.ws && MP.ws.readyState === 1) {
-      MP.ws.send(JSON.stringify(msg));
+  // ── Firebase Helpers ────────────────────────────────────
+  function initFirebase() {
+    if (db) return true;
+    if (!window.firebase || !firebase.database) {
+      console.error('Firebase not loaded');
+      return false;
     }
+    db = firebase.database();
+    return true;
   }
 
-  // ── WebSocket Connection ────────────────────────────────
-  function connect(callback) {
-    if (MP.ws && MP.ws.readyState <= 1) {
-      if (callback) callback();
-      return;
-    }
-
-    // Show connecting UI immediately
-    showOverlay(
-      '<h2>CONNECTING...</h2>' +
-      '<p id="mp-status">Waking up server...</p>' +
-      '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
-    );
-
-    // Wake the server via HTTP first (Render free tier spins down)
-    var httpUrl = SERVER_URL.replace('wss://', 'https://').replace('ws://', 'http://');
-    fetch(httpUrl + '/health').catch(function () {});
-
-    var retries = 0;
-    var maxRetries = 10;
-
-    function tryConnect() {
-      if (MP.gamePhase === 'idle') return; // user cancelled
-      showStatus('Connecting... (' + (retries + 1) + '/' + maxRetries + ')');
-
-      MP.ws = new WebSocket(SERVER_URL);
-      MP.ws.binaryType = 'blob';
-
-      MP.ws.onopen = function () {
-        MP.pingInterval = setInterval(function () { sendJSON({ type: 'ping' }); }, 25000);
-        if (callback) callback();
-      };
-
-      MP.ws.onmessage = function (event) {
-        if (event.data instanceof Blob) {
-          onFrameReceived(event.data);
-          return;
-        }
-        var msg;
-        try { msg = JSON.parse(event.data); } catch (e) { return; }
-        handleServerMessage(msg);
-      };
-
-      MP.ws.onclose = function () {
-        clearInterval(MP.pingInterval);
-        if (MP.gamePhase === 'idle' || MP.gamePhase === 'finished') return;
-        if (retries < maxRetries) {
-          retries++;
-          setTimeout(tryConnect, 3000);
-        } else {
-          showOverlay(
-            '<h2>CONNECTION FAILED</h2>' +
-            '<p>Could not reach the server. Try again later.</p>' +
-            '<button class="mp-btn" onclick="MP.backToMenu()">BACK</button>'
-          );
-        }
-      };
-
-      MP.ws.onerror = function () {};
-    }
-
-    tryConnect();
+  function generateCode() {
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var code = '';
+    for (var i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    return code;
   }
 
-  // ── Server Message Handler ──────────────────────────────
-  function handleServerMessage(msg) {
-    switch (msg.type) {
-      case 'room_created':
-        MP.roomCode = msg.code;
-        showWaitingForOpponent();
-        break;
+  function cleanupListeners() {
+    MP.listeners.forEach(function (l) {
+      l.ref.off(l.event, l.fn);
+    });
+    MP.listeners = [];
+  }
 
-      case 'room_joined':
-        MP.playerIndex = msg.playerIndex;
-        MP.roomCode = msg.code;
-        showReadyScreen();
-        break;
+  function listen(ref, event, fn) {
+    ref.on(event, fn);
+    MP.listeners.push({ ref: ref, event: event, fn: fn });
+  }
 
-      case 'opponent_joined':
-        showReadyScreen();
-        break;
+  // ── Room Management ─────────────────────────────────────
+  function createRoom(callback) {
+    var code = generateCode();
+    var ref = db.ref('rooms/' + code);
+    ref.once('value', function (snap) {
+      if (snap.exists()) {
+        // Code collision, try again
+        createRoom(callback);
+        return;
+      }
+      ref.set({
+        state: 'waiting',
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+        players: {
+          0: { ready: false, teamName: 'Player 1' }
+        },
+        currentTurn: -1,
+        quarter: 1,
+        driveCount: 0,
+        scores: { 0: 0, 1: 0 }
+      }).then(function () {
+        MP.roomCode = code;
+        MP.playerIndex = 0;
+        roomRef = ref;
+        // Set up disconnect cleanup
+        ref.child('players/0').onDisconnect().remove();
+        callback(code);
+      });
+    });
+  }
 
-      case 'opponent_ready':
-        MP.opponentName = msg.teamName;
-        showStatus('Opponent (' + msg.teamName + ') is ready!');
-        break;
+  function joinRoom(code, callback, errorCallback) {
+    var ref = db.ref('rooms/' + code);
+    ref.once('value', function (snap) {
+      if (!snap.exists()) {
+        errorCallback('Room not found');
+        return;
+      }
+      var room = snap.val();
+      if (room.players && room.players[1]) {
+        errorCallback('Room is full');
+        return;
+      }
+      if (room.state !== 'waiting') {
+        errorCallback('Game already started');
+        return;
+      }
+      ref.child('players/1').set({ ready: false, teamName: 'Player 2' }).then(function () {
+        MP.roomCode = code;
+        MP.playerIndex = 1;
+        roomRef = ref;
+        ref.child('players/1').onDisconnect().remove();
+        callback();
+      });
+    });
+  }
 
-      case 'game_start':
-        MP.playerIndex = msg.yourIndex;
-        MP.opponentName = msg.opponent;
-        MP.myTotalScore = 0;
-        MP.opponentTotalScore = 0;
-        showCoinToss(msg.firstPlayer === msg.yourIndex);
-        break;
-
-      case 'start_turn':
-        MP.isMyTurn = true;
-        MP.gamePhase = 'playing';
-        MP.quarter = msg.quarter;
-        MP.driveNum = msg.driveNum;
-        if (msg.scores) {
-          MP.myTotalScore = msg.scores[MP.playerIndex];
-          MP.opponentTotalScore = msg.scores[MP.playerIndex === 0 ? 1 : 0];
+  function listenForOpponent() {
+    listen(roomRef.child('players'), 'value', function (snap) {
+      var players = snap.val();
+      if (!players) return;
+      if (players[0] && players[1]) {
+        // Both players present
+        if (MP.gamePhase === 'waiting') {
+          showReadyScreen();
         }
-        onMyTurnStart();
-        break;
-
-      case 'spectate':
-        MP.isMyTurn = false;
-        MP.gamePhase = 'spectating';
-        MP.quarter = msg.quarter;
-        MP.driveNum = msg.driveNum;
-        if (msg.scores) {
-          MP.myTotalScore = msg.scores[MP.playerIndex];
-          MP.opponentTotalScore = msg.scores[MP.playerIndex === 0 ? 1 : 0];
+        // Check if both ready
+        if (players[0].ready && players[1].ready && MP.gamePhase !== 'playing' && MP.gamePhase !== 'spectating' && MP.gamePhase !== 'finished') {
+          startGame();
         }
-        onSpectateStart();
-        break;
-
-      case 'game_over':
-        MP.gamePhase = 'finished';
-        MP.myTotalScore = msg.scores[msg.yourIndex];
-        MP.opponentTotalScore = msg.scores[msg.yourIndex === 0 ? 1 : 0];
-        stopFrameCapture();
-        stopDriveMonitor();
-        unblockInput();
-        showGameOver(msg.winner, msg.yourIndex);
-        break;
-
-      case 'opponent_disconnected':
-        if (MP.gamePhase !== 'finished') {
+      }
+      // Track opponent name
+      var oppIdx = MP.playerIndex === 0 ? 1 : 0;
+      if (players[oppIdx]) {
+        MP.opponentName = players[oppIdx].teamName || ('Player ' + (oppIdx + 1));
+      }
+      // Opponent disconnected
+      if (MP.gamePhase !== 'idle' && MP.gamePhase !== 'lobby' && MP.gamePhase !== 'waiting') {
+        if (!players[oppIdx]) {
           showOverlay('<h2>OPPONENT DISCONNECTED</h2><p>You win by forfeit!</p>' +
             '<button class="mp-btn" onclick="MP.backToMenu()">BACK</button>');
           MP.gamePhase = 'finished';
@@ -190,17 +169,70 @@
           stopDriveMonitor();
           unblockInput();
         }
-        break;
+      }
+    });
+  }
 
-      case 'room_expired':
-        showOverlay('<h2>ROOM EXPIRED</h2><button class="mp-btn" onclick="MP.backToMenu()">BACK</button>');
-        MP.gamePhase = 'idle';
-        break;
+  function startGame() {
+    roomRef.once('value', function (snap) {
+      var room = snap.val();
+      if (room.state === 'playing') return; // already started
 
-      case 'error':
-        showStatus(msg.message || 'Error');
-        break;
-    }
+      // Player 0 does the coin toss
+      if (MP.playerIndex === 0) {
+        var firstPlayer = Math.random() < 0.5 ? 0 : 1;
+        roomRef.update({
+          state: 'playing',
+          currentTurn: firstPlayer,
+          quarter: 1,
+          driveCount: 0,
+          scores: { 0: 0, 1: 0 }
+        });
+      }
+    });
+
+    // Listen for game state changes
+    listen(roomRef, 'value', function (snap) {
+      var room = snap.val();
+      if (!room || room.state !== 'playing') return;
+
+      MP.quarter = room.quarter || 1;
+      MP.driveNum = room.driveCount || 0;
+      MP.myTotalScore = (room.scores && room.scores[MP.playerIndex]) || 0;
+      MP.opponentTotalScore = (room.scores && room.scores[MP.playerIndex === 0 ? 1 : 0]) || 0;
+
+      if (room.currentTurn === MP.playerIndex) {
+        if (MP.gamePhase !== 'playing') {
+          MP.isMyTurn = true;
+          MP.gamePhase = 'playing';
+          onMyTurnStart();
+        }
+      } else if (room.currentTurn >= 0) {
+        if (MP.gamePhase !== 'spectating') {
+          MP.isMyTurn = false;
+          MP.gamePhase = 'spectating';
+          onSpectateStart();
+        }
+      }
+    });
+
+    // Listen for game over
+    listen(roomRef.child('state'), 'value', function (snap) {
+      if (snap.val() === 'finished') {
+        roomRef.once('value', function (rSnap) {
+          var room = rSnap.val();
+          MP.gamePhase = 'finished';
+          MP.myTotalScore = (room.scores && room.scores[MP.playerIndex]) || 0;
+          MP.opponentTotalScore = (room.scores && room.scores[MP.playerIndex === 0 ? 1 : 0]) || 0;
+          stopFrameCapture();
+          stopDriveMonitor();
+          unblockInput();
+          var winner = MP.myTotalScore > MP.opponentTotalScore ? MP.playerIndex :
+                       MP.opponentTotalScore > MP.myTotalScore ? (MP.playerIndex === 0 ? 1 : 0) : -1;
+          showGameOver(winner, MP.playerIndex);
+        });
+      }
+    });
   }
 
   // ── Turn Management ─────────────────────────────────────
@@ -219,11 +251,10 @@
     blockInput();
     showSpectateView();
     updateScorebar();
+    listenForFrames();
   }
 
   // ── Drive End Detection ─────────────────────────────────
-  // Poll game state to detect when a drive cycle completes.
-  // A "drive cycle" = human plays offense → AI plays offense → next human possession starts
   function startDriveMonitor() {
     MP.driveCycleState = 'idle';
     MP.lastCommStage = -1;
@@ -236,18 +267,16 @@
       try {
         var room = _ft._gt();
 
-        // Game reached post-match screen
         if (room === 22 && MP.lastRoom === 14) {
           clearInterval(MP.matchObjPolling);
           var finalScore = getCurrentHumanScore();
           var points = finalScore - MP.driveStartScore;
-          sendJSON({ type: 'game_ended', finalScore: MP.myTotalScore + points });
+          endDrive(points, MP.quarter, true);
           return;
         }
         MP.lastRoom = room;
-        if (room !== 14) return; // only monitor during match
+        if (room !== 14) return;
 
-        // Try to read match controller (instance 71)
         var m = _6E2._Ue2(71);
         if (!m) return;
 
@@ -257,36 +286,29 @@
         var humanTeam = m._0z;
         var scores = m._Sb1;
 
-        // Track drive cycle state machine
         if (MP.driveCycleState === 'idle') {
-          // Wait until we see human on offense
           if (possession === humanTeam) {
             MP.driveCycleState = 'human_offense';
             MP.driveStartScore = scores ? scores[humanTeam] : 0;
           }
         } else if (MP.driveCycleState === 'human_offense') {
-          // Human drive ended when possession flips to AI
           if (possession !== humanTeam && MP.lastPossession === humanTeam) {
             MP.driveCycleState = 'ai_offense';
           }
-          // Or if quarter ends / game ends
           if (commStage === 17 && MP.lastCommStage !== 17) {
             MP.driveCycleState = 'ai_offense';
           }
         } else if (MP.driveCycleState === 'ai_offense') {
-          // AI drive ended when possession flips back to human
           if (possession === humanTeam && MP.lastPossession !== humanTeam) {
-            // Full cycle complete — time to switch
             var currentScore = scores ? scores[humanTeam] : 0;
             var pointsThisDrive = currentScore - MP.driveStartScore;
-            endDrive(pointsThisDrive, quarter);
+            endDrive(pointsThisDrive, quarter, false);
             return;
           }
-          // Or if end of quarter during AI drive
           if (commStage === 17 && MP.lastCommStage !== 17 && quarter !== MP.lastQuarter) {
             var currentScore2 = scores ? scores[humanTeam] : 0;
             var pointsThisDrive2 = currentScore2 - MP.driveStartScore;
-            endDrive(pointsThisDrive2, quarter);
+            endDrive(pointsThisDrive2, quarter, false);
             return;
           }
         }
@@ -294,9 +316,7 @@
         MP.lastCommStage = commStage;
         MP.lastPossession = possession;
         MP.lastQuarter = quarter;
-      } catch (e) {
-        // Game state not ready yet
-      }
+      } catch (e) {}
     }, 200);
   }
 
@@ -307,15 +327,43 @@
     }
   }
 
-  function endDrive(pointsThisDrive, quarter) {
+  function endDrive(pointsThisDrive, quarter, gameEnded) {
     stopDriveMonitor();
     stopFrameCapture();
     blockInput();
-    sendJSON({
-      type: 'drive_ended',
-      pointsThisDrive: pointsThisDrive,
-      quarter: quarter
+
+    if (!roomRef) return;
+
+    roomRef.once('value', function (snap) {
+      var room = snap.val();
+      if (!room) return;
+
+      var newScores = room.scores || { 0: 0, 1: 0 };
+      newScores[MP.playerIndex] = (newScores[MP.playerIndex] || 0) + pointsThisDrive;
+      var newDriveCount = (room.driveCount || 0) + 1;
+      var newQuarter = quarter > (room.quarter || 1) ? quarter : (room.quarter || 1);
+
+      var totalDrivesPerPlayer = 8;
+      if (gameEnded || newDriveCount >= totalDrivesPerPlayer * 2) {
+        roomRef.update({
+          state: 'finished',
+          scores: newScores,
+          driveCount: newDriveCount,
+          quarter: newQuarter
+        });
+        return;
+      }
+
+      var nextTurn = MP.playerIndex === 0 ? 1 : 0;
+      roomRef.update({
+        currentTurn: nextTurn,
+        scores: newScores,
+        driveCount: newDriveCount,
+        quarter: newQuarter,
+        frame: null // clear frame data
+      });
     });
+
     showTurnBanner('DRIVE COMPLETE — WAITING FOR OPPONENT...');
   }
 
@@ -333,16 +381,24 @@
   function startFrameCapture() {
     stopFrameCapture();
     var canvas = document.getElementById('canvas');
-    if (!canvas) return;
+    if (!canvas || !roomRef) return;
+
+    // Create offscreen canvas for downsampling
+    if (!MP.offscreenCanvas) {
+      MP.offscreenCanvas = document.createElement('canvas');
+      MP.offscreenCanvas.width = FRAME_WIDTH;
+      MP.offscreenCanvas.height = FRAME_HEIGHT;
+      MP.offscreenCtx = MP.offscreenCanvas.getContext('2d');
+    }
 
     MP.frameInterval = setInterval(function () {
-      if (!MP.isMyTurn || !MP.ws || MP.ws.readyState !== 1) return;
+      if (!MP.isMyTurn || !roomRef) return;
       try {
-        canvas.toBlob(function (blob) {
-          if (blob && MP.ws && MP.ws.readyState === 1) {
-            MP.ws.send(blob);
-          }
-        }, 'image/jpeg', FRAME_QUALITY);
+        MP.offscreenCtx.drawImage(canvas, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+        var dataUrl = MP.offscreenCanvas.toDataURL('image/jpeg', FRAME_QUALITY);
+        // Strip the data:image/jpeg;base64, prefix to save bandwidth
+        var b64 = dataUrl.split(',')[1];
+        roomRef.child('frame').set(b64);
       } catch (e) {}
     }, FRAME_INTERVAL_MS);
   }
@@ -354,17 +410,18 @@
     }
   }
 
-  function onFrameReceived(blob) {
-    if (MP.gamePhase !== 'spectating') return;
-    var url = URL.createObjectURL(blob);
-    var img = new Image();
-    img.onload = function () {
-      if (MP.spectateCtx) {
-        MP.spectateCtx.drawImage(img, 0, 0, MP.spectateCanvas.width, MP.spectateCanvas.height);
-      }
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
+  function listenForFrames() {
+    listen(roomRef.child('frame'), 'value', function (snap) {
+      var b64 = snap.val();
+      if (!b64 || MP.gamePhase !== 'spectating') return;
+      var img = new Image();
+      img.onload = function () {
+        if (MP.spectateCtx) {
+          MP.spectateCtx.drawImage(img, 0, 0, MP.spectateCanvas.width, MP.spectateCanvas.height);
+        }
+      };
+      img.src = 'data:image/jpeg;base64,' + b64;
+    });
   }
 
   // ── Input Blocking ──────────────────────────────────────
@@ -417,9 +474,14 @@
   // ── UI: Lobby ───────────────────────────────────────────
   MP.showLobby = function () {
     MP.gamePhase = 'lobby';
-    connect(function () {
-      showLobbyUI();
-    });
+    if (!initFirebase()) {
+      showOverlay(
+        '<h2>ERROR</h2><p>Firebase not loaded. Check your internet connection.</p>' +
+        '<button class="mp-btn" onclick="MP.backToMenu()">BACK</button>'
+      );
+      return;
+    }
+    showLobbyUI();
   };
 
   function showLobbyUI() {
@@ -440,13 +502,20 @@
   MP.go = function () {
     var code = ($('mp-code-input') || {}).value || '';
     if (code.trim().length > 0) {
-      // Join existing game
-      sendJSON({ type: 'join_room', code: code.trim() });
       showStatus('Joining...');
+      joinRoom(code.trim().toUpperCase(), function () {
+        showReadyScreen();
+        listenForOpponent();
+      }, function (err) {
+        showStatus(err);
+      });
     } else {
-      // Create new game
-      sendJSON({ type: 'create_room' });
       showStatus('Creating game...');
+      createRoom(function (newCode) {
+        MP.gamePhase = 'waiting';
+        showWaitingForOpponent();
+        listenForOpponent();
+      });
     }
   };
 
@@ -461,8 +530,9 @@
   }
 
   function showReadyScreen() {
+    MP.gamePhase = 'lobby';
     showOverlay(
-      '<h2>OPPONENT JOINED!</h2>' +
+      '<h2>OPPONENT CONNECTED!</h2>' +
       '<p>Start a match in your game first, then press READY.</p>' +
       '<button class="mp-btn mp-btn-ready" onclick="MP.setReady()">READY</button>' +
       '<p id="mp-status"></p>'
@@ -470,6 +540,7 @@
   }
 
   MP.setReady = function () {
+    if (!roomRef) return;
     var teamName = 'Player ' + (MP.playerIndex + 1);
     try {
       var state = _6E2._Ue2(64);
@@ -477,7 +548,10 @@
         teamName = 'Team ' + state._Ip;
       }
     } catch (e) {}
-    sendJSON({ type: 'player_ready', teamName: teamName });
+    roomRef.child('players/' + MP.playerIndex).update({
+      ready: true,
+      teamName: teamName
+    });
     showStatus('Waiting for opponent to ready up...');
   };
 
@@ -487,7 +561,6 @@
       '<p class="mp-big">' + (youGoFirst ? 'YOU GO FIRST!' : MP.opponentName + ' GOES FIRST') + '</p>' +
       '<p>Get ready...</p>'
     );
-    // Auto-dismiss after 3s (server sends start_turn/spectate after 3s)
   }
 
   // ── UI: Turn Banner ─────────────────────────────────────
@@ -553,7 +626,6 @@
 
       MP.spectateCanvas = cv;
       MP.spectateCtx = cv.getContext('2d');
-      // Fill black initially
       MP.spectateCtx.fillStyle = '#000';
       MP.spectateCtx.fillRect(0, 0, 480, 270);
     } else {
@@ -601,10 +673,14 @@
     hideOverlay();
     hideScorebar();
     hideSpectateView();
-    if (MP.ws) {
-      MP.ws.close();
-      MP.ws = null;
+    cleanupListeners();
+    // Clean up room if we created it and no one joined
+    if (roomRef) {
+      roomRef.child('players/' + MP.playerIndex).remove();
+      roomRef = null;
     }
+    MP.roomCode = null;
+    MP.playerIndex = -1;
   };
 
   // ── TWO PLAYER Button (shown on home screen) ───────────
@@ -618,11 +694,9 @@
     });
     document.body.appendChild(btn);
 
-    // Show/hide based on game state
     setInterval(function () {
       try {
         var room = _ft._gt();
-        // Hide during active match (room 14) or during multiplayer sessions
         if (room === 14 || MP.gamePhase !== 'idle') {
           btn.style.display = 'none';
         } else {
@@ -634,14 +708,28 @@
     }, 500);
   }
 
+  // ── Room Cleanup (delete old rooms) ─────────────────────
+  function cleanupOldRooms() {
+    if (!db) return;
+    var cutoff = Date.now() - 30 * 60 * 1000; // 30 min
+    db.ref('rooms').orderByChild('createdAt').endAt(cutoff).once('value', function (snap) {
+      snap.forEach(function (child) {
+        child.ref.remove();
+      });
+    });
+  }
+
   // ── Init ────────────────────────────────────────────────
   function init() {
-    // Wait for game engine to be ready
     var checkReady = setInterval(function () {
       try {
         if (typeof _ft !== 'undefined' && typeof _6E2 !== 'undefined') {
           clearInterval(checkReady);
           createMPButton();
+          // Cleanup old rooms occasionally
+          if (initFirebase()) {
+            cleanupOldRooms();
+          }
         }
       } catch (e) {}
     }, 500);
