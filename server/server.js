@@ -46,9 +46,9 @@ function getOtherPlayer(room, ws) {
   return room.players.find(p => p && p.ws !== ws);
 }
 
-function handleMessage(ws, data) {
+function handleMessage(ws, data, isBinary) {
   // Binary data = canvas frame, relay to other player
-  if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+  if (isBinary) {
     const room = ws._room;
     if (!room) return;
     const other = getOtherPlayer(room, ws);
@@ -252,11 +252,7 @@ function handleMessage(ws, data) {
 
 wss.on('connection', (ws) => {
   ws.on('message', (data, isBinary) => {
-    if (isBinary) {
-      handleMessage(ws, data);
-    } else {
-      handleMessage(ws, data);
-    }
+    handleMessage(ws, data, isBinary);
   });
 
   ws.on('close', () => {

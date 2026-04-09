@@ -58,38 +58,56 @@
       if (callback) callback();
       return;
     }
-    showStatus('Connecting to server...');
-    MP.ws = new WebSocket(SERVER_URL);
-    MP.ws.binaryType = 'blob';
 
-    MP.ws.onopen = function () {
-      showStatus('Connected!');
-      // Keepalive every 25s
-      MP.pingInterval = setInterval(function () { sendJSON({ type: 'ping' }); }, 25000);
-      if (callback) callback();
-    };
+    // Show connecting UI immediately
+    showOverlay(
+      '<h2>CONNECTING...</h2>' +
+      '<p id="mp-status">Waking up server (may take ~30s on first connect)...</p>' +
+      '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
+    );
 
-    MP.ws.onmessage = function (event) {
-      if (event.data instanceof Blob) {
-        onFrameReceived(event.data);
-        return;
-      }
-      var msg;
-      try { msg = JSON.parse(event.data); } catch (e) { return; }
-      handleServerMessage(msg);
-    };
+    var retries = 0;
+    var maxRetries = 3;
 
-    MP.ws.onclose = function () {
-      clearInterval(MP.pingInterval);
-      if (MP.gamePhase !== 'idle' && MP.gamePhase !== 'finished') {
-        showStatus('Disconnected from server. Reconnecting...');
-        setTimeout(function () { connect(); }, 3000);
-      }
-    };
+    function tryConnect() {
+      MP.ws = new WebSocket(SERVER_URL);
+      MP.ws.binaryType = 'blob';
 
-    MP.ws.onerror = function () {
-      showStatus('Connection error. Retrying...');
-    };
+      MP.ws.onopen = function () {
+        // Keepalive every 25s
+        MP.pingInterval = setInterval(function () { sendJSON({ type: 'ping' }); }, 25000);
+        if (callback) callback();
+      };
+
+      MP.ws.onmessage = function (event) {
+        if (event.data instanceof Blob) {
+          onFrameReceived(event.data);
+          return;
+        }
+        var msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+        handleServerMessage(msg);
+      };
+
+      MP.ws.onclose = function () {
+        clearInterval(MP.pingInterval);
+        if (MP.gamePhase === 'idle' || MP.gamePhase === 'finished') return;
+        if (MP.gamePhase === 'lobby' && retries < maxRetries) {
+          retries++;
+          showStatus('Retrying... (' + retries + '/' + maxRetries + ')');
+          setTimeout(tryConnect, 3000);
+        } else if (MP.gamePhase !== 'idle') {
+          showStatus('Disconnected. Reconnecting...');
+          setTimeout(tryConnect, 3000);
+        }
+      };
+
+      MP.ws.onerror = function () {
+        // onclose will fire after this
+      };
+    }
+
+    tryConnect();
   }
 
   // ── Server Message Handler ──────────────────────────────
@@ -394,20 +412,24 @@
   MP.showLobby = function () {
     MP.gamePhase = 'lobby';
     connect(function () {
-      showOverlay(
-        '<h2>TWO PLAYER MATCH</h2>' +
-        '<p style="color:#aaa;font-size:10px;">Enter a code to join, or leave blank to create a new game</p>' +
-        '<input type="text" id="mp-code-input" class="mp-input" placeholder="GAME CODE" maxlength="6" autocomplete="off" />' +
-        '<button class="mp-btn" onclick="MP.go()">GO</button>' +
-        '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>' +
-        '<p id="mp-status"></p>'
-      );
-      setTimeout(function () {
-        var inp = $('mp-code-input');
-        if (inp) inp.focus();
-      }, 100);
+      showLobbyUI();
     });
   };
+
+  function showLobbyUI() {
+    showOverlay(
+      '<h2>TWO PLAYER MATCH</h2>' +
+      '<p style="color:#aaa;font-size:10px;">Enter a code to join, or leave blank to create a new game</p>' +
+      '<input type="text" id="mp-code-input" class="mp-input" placeholder="GAME CODE" maxlength="6" autocomplete="off" />' +
+      '<button class="mp-btn" onclick="MP.go()">GO</button>' +
+      '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>' +
+      '<p id="mp-status"></p>'
+    );
+    setTimeout(function () {
+      var inp = $('mp-code-input');
+      if (inp) inp.focus();
+    }, 100);
+  }
 
   MP.go = function () {
     var code = ($('mp-code-input') || {}).value || '';
