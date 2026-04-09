@@ -396,60 +396,45 @@
     connect(function () {
       showOverlay(
         '<h2>TWO PLAYER MATCH</h2>' +
-        '<button class="mp-btn" onclick="MP.createRoom()">CREATE ROOM</button>' +
-        '<button class="mp-btn" onclick="MP.showJoinRoom()">JOIN ROOM</button>' +
+        '<p style="color:#aaa;font-size:10px;">Enter a code to join, or leave blank to create a new game</p>' +
+        '<input type="text" id="mp-code-input" class="mp-input" placeholder="GAME CODE" maxlength="6" autocomplete="off" />' +
+        '<button class="mp-btn" onclick="MP.go()">GO</button>' +
         '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>' +
         '<p id="mp-status"></p>'
       );
+      setTimeout(function () {
+        var inp = $('mp-code-input');
+        if (inp) inp.focus();
+      }, 100);
     });
   };
 
-  MP.createRoom = function () {
-    sendJSON({ type: 'create_room' });
-    showOverlay(
-      '<h2>CREATING ROOM...</h2>' +
-      '<p id="mp-status">Connecting...</p>'
-    );
-  };
-
-  MP.showJoinRoom = function () {
-    showOverlay(
-      '<h2>JOIN ROOM</h2>' +
-      '<input type="text" id="mp-code-input" class="mp-input" placeholder="ENTER CODE" maxlength="6" autocomplete="off" />' +
-      '<button class="mp-btn" onclick="MP.joinRoom()">JOIN</button>' +
-      '<button class="mp-btn mp-btn-secondary" onclick="MP.showLobby()">BACK</button>' +
-      '<p id="mp-status"></p>'
-    );
-    setTimeout(function () {
-      var inp = $('mp-code-input');
-      if (inp) inp.focus();
-    }, 100);
-  };
-
-  MP.joinRoom = function () {
+  MP.go = function () {
     var code = ($('mp-code-input') || {}).value || '';
-    if (code.length < 4) {
-      showStatus('Enter a valid room code');
-      return;
+    if (code.trim().length > 0) {
+      // Join existing game
+      sendJSON({ type: 'join_room', code: code.trim() });
+      showStatus('Joining...');
+    } else {
+      // Create new game
+      sendJSON({ type: 'create_room' });
+      showStatus('Creating game...');
     }
-    sendJSON({ type: 'join_room', code: code });
-    showStatus('Joining...');
   };
 
   function showWaitingForOpponent() {
     showOverlay(
-      '<h2>ROOM CREATED</h2>' +
+      '<h2>YOUR CODE</h2>' +
       '<div class="mp-code">' + MP.roomCode + '</div>' +
       '<p>Share this code with your opponent</p>' +
-      '<p id="mp-status">Waiting for opponent to join...</p>' +
+      '<p id="mp-status">Waiting for opponent...</p>' +
       '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
     );
   }
 
   function showReadyScreen() {
     showOverlay(
-      '<h2>ROOM: ' + MP.roomCode + '</h2>' +
-      '<p>Opponent connected!</p>' +
+      '<h2>OPPONENT JOINED!</h2>' +
       '<p>Start a match in your game first, then press READY.</p>' +
       '<button class="mp-btn mp-btn-ready" onclick="MP.setReady()">READY</button>' +
       '<p id="mp-status"></p>'
