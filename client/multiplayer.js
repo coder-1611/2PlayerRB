@@ -444,17 +444,36 @@
   }
 
   // ── Keyboard Guard ────────────────────────────────────────
-  // The GameMaker engine captures keyboard events at the window level
-  // (capturing phase). We intercept them FIRST and kill them when our
-  // overlay is visible so typing in the code input works.
+  // The GameMaker engine uses window.onkeydown / window.onkeyup (property
+  // handlers). We save and null them when our overlay is visible, and
+  // restore them when it hides, so typing in inputs works.
   var overlayVisible = false;
-  ['keydown', 'keyup', 'keypress'].forEach(function (evt) {
-    window.addEventListener(evt, function (e) {
-      if (overlayVisible) {
-        e.stopImmediatePropagation();
-      }
-    }, true); // capturing phase — fires before the game's handlers
-  });
+  var savedKeyDown = null;
+  var savedKeyUp = null;
+
+  function disableGameKeyboard() {
+    if (window.onkeydown) savedKeyDown = window.onkeydown;
+    if (window.onkeyup) savedKeyUp = window.onkeyup;
+    window.onkeydown = null;
+    window.onkeyup = null;
+  }
+
+  function restoreGameKeyboard() {
+    if (savedKeyDown) window.onkeydown = savedKeyDown;
+    if (savedKeyUp) window.onkeyup = savedKeyUp;
+    savedKeyDown = null;
+    savedKeyUp = null;
+  }
+
+  // The game may re-register handlers periodically; keep them nulled while overlay is up
+  setInterval(function () {
+    if (overlayVisible) {
+      if (window.onkeydown) savedKeyDown = window.onkeydown;
+      if (window.onkeyup) savedKeyUp = window.onkeyup;
+      window.onkeydown = null;
+      window.onkeyup = null;
+    }
+  }, 200);
 
   // ── UI: Overlay System ──────────────────────────────────
   function getOverlay() {
@@ -473,12 +492,14 @@
     el.innerHTML = html;
     el.style.display = 'flex';
     overlayVisible = true;
+    disableGameKeyboard();
   }
 
   function hideOverlay() {
     var el = $('mp-overlay');
     if (el) el.style.display = 'none';
     overlayVisible = false;
+    restoreGameKeyboard();
   }
 
   function showStatus(text) {
