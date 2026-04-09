@@ -443,6 +443,19 @@
     }
   }
 
+  // ── Keyboard Guard ────────────────────────────────────────
+  // The GameMaker engine captures keyboard events at the window level
+  // (capturing phase). We intercept them FIRST and kill them when our
+  // overlay is visible so typing in the code input works.
+  var overlayVisible = false;
+  ['keydown', 'keyup', 'keypress'].forEach(function (evt) {
+    window.addEventListener(evt, function (e) {
+      if (overlayVisible) {
+        e.stopImmediatePropagation();
+      }
+    }, true); // capturing phase — fires before the game's handlers
+  });
+
   // ── UI: Overlay System ──────────────────────────────────
   function getOverlay() {
     var el = $('mp-overlay');
@@ -459,11 +472,13 @@
     var el = getOverlay();
     el.innerHTML = html;
     el.style.display = 'flex';
+    overlayVisible = true;
   }
 
   function hideOverlay() {
     var el = $('mp-overlay');
     if (el) el.style.display = 'none';
+    overlayVisible = false;
   }
 
   function showStatus(text) {
