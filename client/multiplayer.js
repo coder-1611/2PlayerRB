@@ -605,16 +605,15 @@
     });
     document.body.appendChild(btn);
 
-    // Show/hide based on game room
+    // Show/hide based on game state
     setInterval(function () {
       try {
         var room = _ft._gt();
-        // Show on home screen (room 13) or master menu (room 1)
-        btn.style.display = (room === 13 || room === 1) ? 'block' : 'none';
-
-        // Also hide during active multiplayer
-        if (MP.gamePhase !== 'idle') {
+        // Hide during active match (room 14) or during multiplayer sessions
+        if (room === 14 || MP.gamePhase !== 'idle') {
           btn.style.display = 'none';
+        } else {
+          btn.style.display = 'block';
         }
       } catch (e) {
         btn.style.display = 'none';
