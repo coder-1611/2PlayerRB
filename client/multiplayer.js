@@ -8,7 +8,7 @@
 
   // ── Config ──────────────────────────────────────────────
   // Replace with your Render deployment URL
-  var SERVER_URL = 'wss://two-player-rb.onrender.com';
+  var SERVER_URL = 'wss://twoplayerrb.onrender.com';
   var FRAME_INTERVAL_MS = 100; // 10 fps
   var FRAME_QUALITY = 0.45;
 
