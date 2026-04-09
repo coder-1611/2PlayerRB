@@ -444,36 +444,66 @@
   }
 
   // ── Keyboard Guard ────────────────────────────────────────
-  // The GameMaker engine uses window.onkeydown / window.onkeyup (property
-  // handlers). We save and null them when our overlay is visible, and
-  // restore them when it hides, so typing in inputs works.
+  // The GameMaker engine calls _ID2() repeatedly in its game loop, which
+  // re-registers window.onkeydown/onkeyup. Those handlers call
+  // preventDefault() on every keystroke, blocking input fields.
+  //
+  // Fix: use Object.defineProperty to intercept writes to onkeydown/onkeyup.
+  // When overlay is visible, we store the handler but return a no-op wrapper
+  // that skips preventDefault when the event target is inside our overlay.
   var overlayVisible = false;
-  var savedKeyDown = null;
-  var savedKeyUp = null;
+  var _realKeyDown = window.onkeydown;
+  var _realKeyUp = window.onkeyup;
 
-  function disableGameKeyboard() {
-    if (window.onkeydown) savedKeyDown = window.onkeydown;
-    if (window.onkeyup) savedKeyUp = window.onkeyup;
-    window.onkeydown = null;
-    window.onkeyup = null;
+  function wrapHandler(realFn, evtName) {
+    return function (e) {
+      // If overlay is visible and the event target is inside the overlay
+      // (or is an input/button), let the browser handle it normally
+      if (overlayVisible) {
+        var t = e.target || e.srcElement;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON' || t.tagName === 'TEXTAREA' ||
+            (t.closest && t.closest('#mp-overlay')))) {
+          return;
+        }
+        // Even for non-overlay targets, don't let game process keys while overlay is up
+        return;
+      }
+      if (realFn) return realFn.apply(this, arguments);
+    };
   }
 
-  function restoreGameKeyboard() {
-    if (savedKeyDown) window.onkeydown = savedKeyDown;
-    if (savedKeyUp) window.onkeyup = savedKeyUp;
-    savedKeyDown = null;
-    savedKeyUp = null;
+  // Override window.onkeydown/onkeyup with defineProperty so the game
+  // can't bypass our wrapper by re-assigning the property
+  try {
+    Object.defineProperty(window, 'onkeydown', {
+      get: function () { return wrapHandler(_realKeyDown, 'keydown'); },
+      set: function (fn) { _realKeyDown = fn; },
+      configurable: true
+    });
+    Object.defineProperty(window, 'onkeyup', {
+      get: function () { return wrapHandler(_realKeyUp, 'keyup'); },
+      set: function (fn) { _realKeyUp = fn; },
+      configurable: true
+    });
+  } catch (e) {
+    // Fallback: if defineProperty fails, use polling
+    setInterval(function () {
+      if (overlayVisible) {
+        if (window.onkeydown && window.onkeydown._mpWrapped !== true) {
+          _realKeyDown = window.onkeydown;
+          var wrapped = wrapHandler(_realKeyDown, 'keydown');
+          wrapped._mpWrapped = true;
+          window.onkeydown = wrapped;
+        }
+        if (window.onkeyup && window.onkeyup._mpWrapped !== true) {
+          _realKeyUp = window.onkeyup;
+          var wrapped2 = wrapHandler(_realKeyUp, 'keyup');
+          wrapped2._mpWrapped = true;
+          window.onkeyup = wrapped2;
+        }
+      }
+    }, 50);
   }
-
-  // The game may re-register handlers periodically; keep them nulled while overlay is up
-  setInterval(function () {
-    if (overlayVisible) {
-      if (window.onkeydown) savedKeyDown = window.onkeydown;
-      if (window.onkeyup) savedKeyUp = window.onkeyup;
-      window.onkeydown = null;
-      window.onkeyup = null;
-    }
-  }, 200);
 
   // ── UI: Overlay System ──────────────────────────────────
   function getOverlay() {
@@ -492,14 +522,12 @@
     el.innerHTML = html;
     el.style.display = 'flex';
     overlayVisible = true;
-    disableGameKeyboard();
   }
 
   function hideOverlay() {
     var el = $('mp-overlay');
     if (el) el.style.display = 'none';
     overlayVisible = false;
-    restoreGameKeyboard();
   }
 
   function showStatus(text) {
