@@ -495,7 +495,15 @@
     );
     setTimeout(function () {
       var inp = $('mp-code-input');
-      if (inp) inp.focus();
+      if (inp) {
+        inp.focus();
+        // Stop game engine from swallowing keyboard input
+        ['keydown', 'keyup', 'keypress'].forEach(function (evt) {
+          inp.addEventListener(evt, function (e) {
+            e.stopPropagation();
+          });
+        });
+      }
     }, 100);
   }
 
