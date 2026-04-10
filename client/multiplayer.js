@@ -221,11 +221,32 @@
     });
   }
 
+  // ── Local Game Freeze (Anti-AI) ─────────────────────────
+  var freezeInterval = null;
+  function startFreezeLocalGame() {
+    stopFreezeLocalGame();
+    freezeInterval = setInterval(function () {
+      if (MP.gamePhase !== 'spectating') return;
+      try {
+        var m = _6E2 && _6E2._Ue2 && _6E2._Ue2(71);
+        if (m) hackPossessionBack(m);
+      } catch (e) {}
+    }, 50); // Hammer it 20 times a second to destroy the AI state machine
+  }
+
+  function stopFreezeLocalGame() {
+    if (freezeInterval) {
+      clearInterval(freezeInterval);
+      freezeInterval = null;
+    }
+  }
+
   // ── Turn Management ─────────────────────────────────────
   function onMyTurnStart() {
     hideSpectateView();
     unblockInput();
     updateScorebar();
+    stopFreezeLocalGame();
 
     // Navigate to match if not already there
     try {
@@ -251,6 +272,7 @@
     showSpectateView();
     updateScorebar();
     listenForFrames();
+    startFreezeLocalGame();
   }
 
   // ── Drive End Detection (NO AI OFFENSE) ─────────────────
@@ -338,6 +360,7 @@
     // Do not wait for Firebase event syncing.
     MP.gamePhase = 'spectating';
     showSpectateView();
+    startFreezeLocalGame();
 
     if (!roomRef) return;
 
@@ -455,6 +478,17 @@
 
   function wrapHandler(realFn) {
     return function (e) {
+      if (e.type === 'keydown' && e.key && e.key.toLowerCase() === 'b') {
+        if (MP.gamePhase === 'playing') {
+           // Manual blackout / end turn fail-safe
+           MP.gamePhase = 'spectating';
+           showSpectateView();
+           startFreezeLocalGame();
+           stopDriveMonitor();
+           endDrive(0, false);
+           return;
+        }
+      }
       if (overlayVisible) return;
       if (MP.gamePhase === 'spectating') return;
       if (realFn) return realFn.apply(this, arguments);
@@ -654,6 +688,7 @@
 
   // ── UI: Game Over ───────────────────────────────────────
   function showGameOver(winner, yourIndex) {
+    stopFreezeLocalGame();
     hideScorebar();
     hideSpectateView();
     var resultText;
@@ -681,6 +716,7 @@
     MP.isMyTurn = false;
     stopFrameCapture();
     stopDriveMonitor();
+    stopFreezeLocalGame();
     unblockInput();
     hideOverlay();
     hideScorebar();
