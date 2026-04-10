@@ -229,6 +229,40 @@
   function stopFreezeLocalGame() {
   }
 
+  if (!window.MP) window.MP = {};
+  window.MP.skipAIOffense = function(_, t) {
+    try {
+      var m = _6E2 && _6E2._Ue2 && _6E2._Ue2(71);
+      if (m && m._UD !== m._0z) {
+        console.log("[MP] Skipping AI Offense! Hacking possession back to Human safely at scrimmage.");
+        m._UD = m._0z;       // Give possession back to human
+        m._Vy = 2;           // Set to possession/waiting state
+        m._l61 = 10;         // Reset yards to first down
+        m._6F = -75;         // Reset field position (own 25 yard line)
+        m._831 = '';         // Clear play call
+        m._t11 = 1;          // Reset timer flag
+        m._8c1 = 0;          // Reset counter
+        
+        if (MP.gamePhase === 'playing' && typeof MP._triggerTurnover === 'function') {
+             MP._triggerTurnover();
+        }
+      }
+    } catch(e) {
+      console.log(e);
+    }
+  };
+
+  MP._triggerTurnover = function() {
+    if (MP.gamePhase === 'playing') {
+      console.log('[MP] AI Offense Skipped - Triggering turnover');
+      MP.gamePhase = 'spectating';
+      if (typeof showSpectateView === 'function') showSpectateView();
+      if (typeof startFreezeLocalGame === 'function') startFreezeLocalGame();
+      if (typeof stopDriveMonitor === 'function') stopDriveMonitor();
+      if (typeof endDrive === 'function') endDrive(0, false);
+    }
+  };
+
   // ── Turn Management ─────────────────────────────────────
   function onMyTurnStart() {
     hideSpectateView();
