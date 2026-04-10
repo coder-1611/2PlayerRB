@@ -291,6 +291,8 @@
           if (possession === humanTeam && (vy === 2 || vy === 3 || vy === 4 || vy === 1)) {
             MP.driveCycleState = 'human_offense';
             MP.driveStartScore = scores ? scores[humanTeam] : 0;
+          } else {
+            hackPossessionBack(m);
           }
         }
 
