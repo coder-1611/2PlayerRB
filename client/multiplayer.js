@@ -221,24 +221,12 @@
     });
   }
 
-  // ── Local Game Freeze (Anti-AI) ─────────────────────────
-  var freezeInterval = null;
+  // ── Removed Automated AI Hacks ─────────────────────────
   function startFreezeLocalGame() {
-    stopFreezeLocalGame();
-    freezeInterval = setInterval(function () {
-      if (MP.gamePhase !== 'spectating') return;
-      try {
-        var m = _6E2 && _6E2._Ue2 && _6E2._Ue2(71);
-        if (m) hackPossessionBack(m);
-      } catch (e) {}
-    }, 50); // Hammer it 20 times a second to destroy the AI state machine
+    console.log("AI OFFENSE HACKS NOT AVAILABLE, WE WILL FIX IT LATER");
   }
 
   function stopFreezeLocalGame() {
-    if (freezeInterval) {
-      clearInterval(freezeInterval);
-      freezeInterval = null;
-    }
   }
 
   // ── Turn Management ─────────────────────────────────────
@@ -275,81 +263,16 @@
     startFreezeLocalGame();
   }
 
-  // ── Drive End Detection (NO AI OFFENSE) ─────────────────
+  // ── Removed Drive End Detection ─────────────────
   function startDriveMonitor() {
-    stopDriveMonitor();
-    MP.driveCycleState = 'idle';
-    MP.driveStartScore = getCurrentHumanScore();
-
-    MP.matchObjPolling = setInterval(function () {
-      try {
-        var room = _ft._gt();
-
-        // Match ended naturally (went to post-match screen)
-        if (room === 22 && MP.lastRoom === 14) {
-          var finalScore = getCurrentHumanScore();
-          var points = finalScore - MP.driveStartScore;
-          stopDriveMonitor();
-          endDrive(points, true);
-          return;
-        }
-        MP.lastRoom = room;
-        if (room !== 14) return;
-
-        var m = _6E2._Ue2(71);
-        if (!m) return;
-
-        var possession = m._UD;
-        var humanTeam = m._0z;
-        var scores = m._Sb1;
-
-        // State: idle → waiting for human to get the ball
-        if (MP.driveCycleState === 'idle') {
-          if (possession === humanTeam) {
-            MP.driveCycleState = 'human_offense';
-            MP.driveStartScore = scores ? scores[humanTeam] : 0;
-          } else {
-             // Force ball to human on their own 25 yard line to start their drive
-             hackPossessionBack(m);
-          }
-        }
-        // State: human_offense → playing, watching for drive end
-        else if (MP.driveCycleState === 'human_offense') {
-          
-          // If human loses possession FOR ANY REASON (Interception, Fumble, Punt, FG, post-TD kickoff)
-          // The drive is OVER instantly.
-          if (possession !== humanTeam) {
-            var earned = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
-            // IMMEDIATELY FORCE BALL BACK TO HUMAN! 
-            // This freezes the local game engine at the line of scrimmage so the AI doesn't play in the background!
-            hackPossessionBack(m);
-            stopDriveMonitor();
-            endDrive(earned, false);
-            return;
-          }
-        }
-      } catch (e) {}
-    }, 200);
+    console.log("AUTO TURNOVER DETECTION NOT AVAILABLE, WE WILL FIX IT LATER");
+    console.log("Press the 'B' key to manually end your turn.");
   }
 
   function stopDriveMonitor() {
-    if (MP.matchObjPolling) {
-      clearInterval(MP.matchObjPolling);
-      MP.matchObjPolling = null;
-    }
   }
 
-  // ── Possession Hack: Force ball back to human ───────────
   function hackPossessionBack(m) {
-    try {
-      m._UD = m._0z;       // Give possession back to human
-      m._Vy = 2;           // Set to possession/waiting state
-      m._l61 = 10;         // Reset yards to first down
-      m._6F = -75;         // Reset field position (own 25 yard line)
-      m._831 = '';         // Clear play call
-      m._t11 = 1;          // Reset timer flag
-      m._8c1 = 0;          // Reset counter
-    } catch (e) {}
   }
 
   function endDrive(pointsThisDrive, gameEnded) {
