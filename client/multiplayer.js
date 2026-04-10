@@ -298,6 +298,9 @@
           // The drive is OVER instantly.
           if (possession !== humanTeam) {
             var earned = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
+            // IMMEDIATELY FORCE BALL BACK TO HUMAN! 
+            // This freezes the local game engine at the line of scrimmage so the AI doesn't play in the background!
+            hackPossessionBack(m);
             stopDriveMonitor();
             endDrive(earned, false);
             return;
