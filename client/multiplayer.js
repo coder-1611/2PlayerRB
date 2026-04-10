@@ -1,18 +1,21 @@
 /*
  * 2PlayerRB — Multiplayer module for Retro Bowl (Firebase version)
- * Uses Firebase Realtime Database for room management, turn coordination,
- * score tracking, and canvas frame streaming.
+ *
+ * Turn model: Each player plays offense only (AI plays defense).
+ * When your drive ends, the other player plays offense.
+ * No AI offense — possession is hacked back to human after each drive.
+ * 4 two-minute quarters, however many drives happen naturally.
  */
 (function () {
   'use strict';
 
   // ── Config ──────────────────────────────────────────────
-  var FRAME_INTERVAL_MS = 200; // 5 fps for Firebase bandwidth
+  var FRAME_INTERVAL_MS = 200; // 5 fps
   var FRAME_QUALITY = 0.3;
-  var FRAME_WIDTH = 240; // downsample for bandwidth
+  var FRAME_WIDTH = 240;
   var FRAME_HEIGHT = 135;
 
-  // ── Firebase refs (set after init) ──────────────────────
+  // ── Firebase ──────────────────────────────────────────────
   var db = null;
   var roomRef = null;
 
@@ -29,13 +32,13 @@
     driveNum: 0,
 
     // Drive detection
-    lastCommStage: -1,
-    lastPossession: -1,
-    lastQuarter: -1,
-    lastRoom: -1,
     driveStartScore: 0,
-    driveCycleState: 'idle',
+    driveCycleState: 'idle', // idle | human_offense
     matchObjPolling: null,
+    lastPossession: -1,
+    lastRoom: -1,
+    lastVy: -1,
+    waitingForPAT: false,
 
     // Frame streaming
     frameInterval: null,
@@ -45,9 +48,7 @@
     offscreenCtx: null,
 
     // Firebase listeners
-    listeners: [],
-
-    pingInterval: null
+    listeners: []
   };
 
   // ── Utility ─────────────────────────────────────────────
@@ -72,9 +73,7 @@
   }
 
   function cleanupListeners() {
-    MP.listeners.forEach(function (l) {
-      l.ref.off(l.event, l.fn);
-    });
+    MP.listeners.forEach(function (l) { l.ref.off(l.event, l.fn); });
     MP.listeners = [];
   }
 
@@ -88,17 +87,11 @@
     var code = generateCode();
     var ref = db.ref('rooms/' + code);
     ref.once('value', function (snap) {
-      if (snap.exists()) {
-        // Code collision, try again
-        createRoom(callback);
-        return;
-      }
+      if (snap.exists()) { createRoom(callback); return; }
       ref.set({
         state: 'waiting',
         createdAt: firebase.database.ServerValue.TIMESTAMP,
-        players: {
-          0: { ready: false, teamName: 'Player 1' }
-        },
+        players: { 0: { teamName: 'Player 1' } },
         currentTurn: -1,
         quarter: 1,
         driveCount: 0,
@@ -107,7 +100,6 @@
         MP.roomCode = code;
         MP.playerIndex = 0;
         roomRef = ref;
-        // Set up disconnect cleanup
         ref.child('players/0').onDisconnect().remove();
         callback(code);
       });
@@ -117,20 +109,11 @@
   function joinRoom(code, callback, errorCallback) {
     var ref = db.ref('rooms/' + code);
     ref.once('value', function (snap) {
-      if (!snap.exists()) {
-        errorCallback('Room not found');
-        return;
-      }
+      if (!snap.exists()) { errorCallback('Room not found'); return; }
       var room = snap.val();
-      if (room.players && room.players[1]) {
-        errorCallback('Room is full');
-        return;
-      }
-      if (room.state !== 'waiting') {
-        errorCallback('Game already started');
-        return;
-      }
-      ref.child('players/1').set({ ready: false, teamName: 'Player 2' }).then(function () {
+      if (room.players && room.players[1]) { errorCallback('Room is full'); return; }
+      if (room.state !== 'waiting') { errorCallback('Game already started'); return; }
+      ref.child('players/1').set({ teamName: 'Player 2' }).then(function () {
         MP.roomCode = code;
         MP.playerIndex = 1;
         roomRef = ref;
@@ -140,27 +123,27 @@
     });
   }
 
+  // ── Auto-Start: Listen for opponent and start game ──────
   function listenForOpponent() {
     listen(roomRef.child('players'), 'value', function (snap) {
       var players = snap.val();
       if (!players) return;
-      if (players[0] && players[1]) {
-        // Both players present
-        if (MP.gamePhase === 'waiting') {
-          showReadyScreen();
-        }
-        // Check if both ready
-        if (players[0].ready && players[1].ready && MP.gamePhase !== 'playing' && MP.gamePhase !== 'spectating' && MP.gamePhase !== 'finished') {
-          startGame();
-        }
-      }
+
       // Track opponent name
       var oppIdx = MP.playerIndex === 0 ? 1 : 0;
       if (players[oppIdx]) {
         MP.opponentName = players[oppIdx].teamName || ('Player ' + (oppIdx + 1));
       }
-      // Opponent disconnected
-      if (MP.gamePhase !== 'idle' && MP.gamePhase !== 'lobby' && MP.gamePhase !== 'waiting') {
+
+      // Both players present → auto-start
+      if (players[0] && players[1]) {
+        if (MP.gamePhase === 'waiting') {
+          startGame();
+        }
+      }
+
+      // Opponent disconnected during game
+      if (MP.gamePhase === 'playing' || MP.gamePhase === 'spectating') {
         if (!players[oppIdx]) {
           showOverlay('<h2>OPPONENT DISCONNECTED</h2><p>You win by forfeit!</p>' +
             '<button class="mp-btn" onclick="MP.backToMenu()">BACK</button>');
@@ -174,9 +157,12 @@
   }
 
   function startGame() {
+    // Prevent double-start
+    if (MP.gamePhase === 'playing' || MP.gamePhase === 'spectating') return;
+
     roomRef.once('value', function (snap) {
       var room = snap.val();
-      if (room.state === 'playing') return; // already started
+      if (room.state === 'playing') return;
 
       // Player 0 does the coin toss
       if (MP.playerIndex === 0) {
@@ -239,10 +225,23 @@
   function onMyTurnStart() {
     hideSpectateView();
     unblockInput();
-    startFrameCapture();
-    startDriveMonitor();
     updateScorebar();
-    showTurnBanner('YOUR TURN — PLAY YOUR DRIVE!');
+
+    // Navigate to match if not already there
+    try {
+      var room = _ft._gt();
+      if (room !== 14) {
+        _Hj(14);
+      }
+    } catch (e) {}
+
+    // Short delay for match to load, then start monitoring
+    setTimeout(function () {
+      startFrameCapture();
+      startDriveMonitor();
+    }, 1000);
+
+    showTurnBanner('YOUR TURN — PLAY OFFENSE!');
   }
 
   function onSpectateStart() {
@@ -254,24 +253,26 @@
     listenForFrames();
   }
 
-  // ── Drive End Detection ─────────────────────────────────
+  // ── Drive End Detection (NO AI OFFENSE) ─────────────────
   function startDriveMonitor() {
+    stopDriveMonitor();
     MP.driveCycleState = 'idle';
-    MP.lastCommStage = -1;
     MP.lastPossession = -1;
-    MP.lastQuarter = -1;
     MP.lastRoom = -1;
+    MP.lastVy = -1;
+    MP.waitingForPAT = false;
     MP.driveStartScore = getCurrentHumanScore();
 
     MP.matchObjPolling = setInterval(function () {
       try {
         var room = _ft._gt();
 
+        // Match ended naturally (went to post-match screen)
         if (room === 22 && MP.lastRoom === 14) {
-          clearInterval(MP.matchObjPolling);
           var finalScore = getCurrentHumanScore();
           var points = finalScore - MP.driveStartScore;
-          endDrive(points, MP.quarter, true);
+          stopDriveMonitor();
+          endDrive(points, true);
           return;
         }
         MP.lastRoom = room;
@@ -280,42 +281,49 @@
         var m = _6E2._Ue2(71);
         if (!m) return;
 
-        var commStage = m._Vy;
         var possession = m._UD;
-        var quarter = m._Wy;
         var humanTeam = m._0z;
+        var vy = m._Vy;
         var scores = m._Sb1;
 
+        // State: idle → waiting for human to get the ball
         if (MP.driveCycleState === 'idle') {
-          if (possession === humanTeam) {
+          if (possession === humanTeam && (vy === 2 || vy === 3 || vy === 4 || vy === 1)) {
             MP.driveCycleState = 'human_offense';
             MP.driveStartScore = scores ? scores[humanTeam] : 0;
           }
-        } else if (MP.driveCycleState === 'human_offense') {
-          if (possession !== humanTeam && MP.lastPossession === humanTeam) {
-            MP.driveCycleState = 'ai_offense';
+        }
+
+        // State: human_offense → playing, watching for drive end
+        else if (MP.driveCycleState === 'human_offense') {
+
+          // Touchdown: wait for PAT/2pt to complete before ending drive
+          if (vy === 10 && MP.lastVy !== 10) {
+            MP.waitingForPAT = true;
           }
-          if (commStage === 17 && MP.lastCommStage !== 17) {
-            MP.driveCycleState = 'ai_offense';
-          }
-        } else if (MP.driveCycleState === 'ai_offense') {
-          if (possession === humanTeam && MP.lastPossession !== humanTeam) {
-            var currentScore = scores ? scores[humanTeam] : 0;
-            var pointsThisDrive = currentScore - MP.driveStartScore;
-            endDrive(pointsThisDrive, quarter, false);
+
+          // PAT/2pt completed — drive is done
+          if (MP.waitingForPAT && (vy === 1 || vy === 2) && MP.lastVy !== 1 && MP.lastVy !== 2) {
+            var pts = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
+            hackPossessionBack(m);
+            stopDriveMonitor();
+            endDrive(pts, false);
             return;
           }
-          if (commStage === 17 && MP.lastCommStage !== 17 && quarter !== MP.lastQuarter) {
-            var currentScore2 = scores ? scores[humanTeam] : 0;
-            var pointsThisDrive2 = currentScore2 - MP.driveStartScore;
-            endDrive(pointsThisDrive2, quarter, false);
+
+          // Possession flipped to AI (turnover, punt, FG, downs, etc.)
+          // But NOT if we're waiting for PAT
+          if (!MP.waitingForPAT && possession !== humanTeam && MP.lastPossession === humanTeam) {
+            var pts2 = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
+            hackPossessionBack(m);
+            stopDriveMonitor();
+            endDrive(pts2, false);
             return;
           }
         }
 
-        MP.lastCommStage = commStage;
         MP.lastPossession = possession;
-        MP.lastQuarter = quarter;
+        MP.lastVy = vy;
       } catch (e) {}
     }, 200);
   }
@@ -327,8 +335,20 @@
     }
   }
 
-  function endDrive(pointsThisDrive, quarter, gameEnded) {
-    stopDriveMonitor();
+  // ── Possession Hack: Force ball back to human ───────────
+  function hackPossessionBack(m) {
+    try {
+      m._UD = m._0z;       // Give possession back to human
+      m._Vy = 2;           // Set to possession/waiting state
+      m._l61 = 10;         // Reset yards to first down
+      m._6F = -75;         // Reset field position (own 25 yard line)
+      m._831 = '';         // Clear play call
+      m._t11 = 1;          // Reset timer flag
+      m._8c1 = 0;          // Reset counter
+    } catch (e) {}
+  }
+
+  function endDrive(pointsThisDrive, gameEnded) {
     stopFrameCapture();
     blockInput();
 
@@ -341,15 +361,12 @@
       var newScores = room.scores || { 0: 0, 1: 0 };
       newScores[MP.playerIndex] = (newScores[MP.playerIndex] || 0) + pointsThisDrive;
       var newDriveCount = (room.driveCount || 0) + 1;
-      var newQuarter = quarter > (room.quarter || 1) ? quarter : (room.quarter || 1);
 
-      var totalDrivesPerPlayer = 8;
-      if (gameEnded || newDriveCount >= totalDrivesPerPlayer * 2) {
+      if (gameEnded) {
         roomRef.update({
           state: 'finished',
           scores: newScores,
-          driveCount: newDriveCount,
-          quarter: newQuarter
+          driveCount: newDriveCount
         });
         return;
       }
@@ -359,12 +376,11 @@
         currentTurn: nextTurn,
         scores: newScores,
         driveCount: newDriveCount,
-        quarter: newQuarter,
-        frame: null // clear frame data
+        frame: null
       });
     });
 
-    showTurnBanner('DRIVE COMPLETE — WAITING FOR OPPONENT...');
+    showTurnBanner('DRIVE COMPLETE — OPPONENT\'S TURN!');
   }
 
   function getCurrentHumanScore() {
@@ -383,7 +399,6 @@
     var canvas = document.getElementById('canvas');
     if (!canvas || !roomRef) return;
 
-    // Create offscreen canvas for downsampling
     if (!MP.offscreenCanvas) {
       MP.offscreenCanvas = document.createElement('canvas');
       MP.offscreenCanvas.width = FRAME_WIDTH;
@@ -396,7 +411,6 @@
       try {
         MP.offscreenCtx.drawImage(canvas, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
         var dataUrl = MP.offscreenCanvas.toDataURL('image/jpeg', FRAME_QUALITY);
-        // Strip the data:image/jpeg;base64, prefix to save bandwidth
         var b64 = dataUrl.split(',')[1];
         roomRef.child('frame').set(b64);
       } catch (e) {}
@@ -445,62 +459,36 @@
 
   // ── Keyboard Guard ────────────────────────────────────────
   // The GameMaker engine calls _ID2() repeatedly in its game loop, which
-  // re-registers window.onkeydown/onkeyup. Those handlers call
-  // preventDefault() on every keystroke, blocking input fields.
-  //
-  // Fix: use Object.defineProperty to intercept writes to onkeydown/onkeyup.
-  // When overlay is visible, we store the handler but return a no-op wrapper
-  // that skips preventDefault when the event target is inside our overlay.
+  // re-registers window.onkeydown/onkeyup with preventDefault() handlers.
+  // We intercept all writes via Object.defineProperty so typing works in
+  // our overlay inputs.
   var overlayVisible = false;
   var _realKeyDown = window.onkeydown;
   var _realKeyUp = window.onkeyup;
 
-  function wrapHandler(realFn, evtName) {
+  function wrapHandler(realFn) {
     return function (e) {
-      // If overlay is visible and the event target is inside the overlay
-      // (or is an input/button), let the browser handle it normally
-      if (overlayVisible) {
-        var t = e.target || e.srcElement;
-        if (t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON' || t.tagName === 'TEXTAREA' ||
-            (t.closest && t.closest('#mp-overlay')))) {
-          return;
-        }
-        // Even for non-overlay targets, don't let game process keys while overlay is up
-        return;
-      }
+      if (overlayVisible) return;
       if (realFn) return realFn.apply(this, arguments);
     };
   }
 
-  // Override window.onkeydown/onkeyup with defineProperty so the game
-  // can't bypass our wrapper by re-assigning the property
   try {
     Object.defineProperty(window, 'onkeydown', {
-      get: function () { return wrapHandler(_realKeyDown, 'keydown'); },
+      get: function () { return wrapHandler(_realKeyDown); },
       set: function (fn) { _realKeyDown = fn; },
       configurable: true
     });
     Object.defineProperty(window, 'onkeyup', {
-      get: function () { return wrapHandler(_realKeyUp, 'keyup'); },
+      get: function () { return wrapHandler(_realKeyUp); },
       set: function (fn) { _realKeyUp = fn; },
       configurable: true
     });
   } catch (e) {
-    // Fallback: if defineProperty fails, use polling
     setInterval(function () {
       if (overlayVisible) {
-        if (window.onkeydown && window.onkeydown._mpWrapped !== true) {
-          _realKeyDown = window.onkeydown;
-          var wrapped = wrapHandler(_realKeyDown, 'keydown');
-          wrapped._mpWrapped = true;
-          window.onkeydown = wrapped;
-        }
-        if (window.onkeyup && window.onkeyup._mpWrapped !== true) {
-          _realKeyUp = window.onkeyup;
-          var wrapped2 = wrapHandler(_realKeyUp, 'keyup');
-          wrapped2._mpWrapped = true;
-          window.onkeyup = wrapped2;
-        }
+        if (window.onkeydown) { _realKeyDown = window.onkeydown; window.onkeydown = null; }
+        if (window.onkeyup) { _realKeyUp = window.onkeyup; window.onkeyup = null; }
       }
     }, 50);
   }
@@ -561,11 +549,8 @@
       var inp = $('mp-code-input');
       if (inp) {
         inp.focus();
-        // Stop game engine from swallowing keyboard input
         ['keydown', 'keyup', 'keypress'].forEach(function (evt) {
-          inp.addEventListener(evt, function (e) {
-            e.stopPropagation();
-          });
+          inp.addEventListener(evt, function (e) { e.stopPropagation(); });
         });
       }
     }, 100);
@@ -576,7 +561,12 @@
     if (code.trim().length > 0) {
       showStatus('Joining...');
       joinRoom(code.trim().toUpperCase(), function () {
-        showReadyScreen();
+        MP.gamePhase = 'waiting';
+        showOverlay(
+          '<h2>JOINED!</h2>' +
+          '<p>Waiting for game to start...</p>' +
+          '<p id="mp-status"></p>'
+        );
         listenForOpponent();
       }, function (err) {
         showStatus(err);
@@ -585,55 +575,17 @@
       showStatus('Creating game...');
       createRoom(function (newCode) {
         MP.gamePhase = 'waiting';
-        showWaitingForOpponent();
+        showOverlay(
+          '<h2>YOUR CODE</h2>' +
+          '<div class="mp-code">' + MP.roomCode + '</div>' +
+          '<p>Share this code with your opponent</p>' +
+          '<p id="mp-status">Waiting for opponent to join...</p>' +
+          '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
+        );
         listenForOpponent();
       });
     }
   };
-
-  function showWaitingForOpponent() {
-    showOverlay(
-      '<h2>YOUR CODE</h2>' +
-      '<div class="mp-code">' + MP.roomCode + '</div>' +
-      '<p>Share this code with your opponent</p>' +
-      '<p id="mp-status">Waiting for opponent...</p>' +
-      '<button class="mp-btn mp-btn-secondary" onclick="MP.backToMenu()">CANCEL</button>'
-    );
-  }
-
-  function showReadyScreen() {
-    MP.gamePhase = 'lobby';
-    showOverlay(
-      '<h2>OPPONENT CONNECTED!</h2>' +
-      '<p>Start a match in your game first, then press READY.</p>' +
-      '<button class="mp-btn mp-btn-ready" onclick="MP.setReady()">READY</button>' +
-      '<p id="mp-status"></p>'
-    );
-  }
-
-  MP.setReady = function () {
-    if (!roomRef) return;
-    var teamName = 'Player ' + (MP.playerIndex + 1);
-    try {
-      var state = _6E2._Ue2(64);
-      if (state && state._Ip !== undefined) {
-        teamName = 'Team ' + state._Ip;
-      }
-    } catch (e) {}
-    roomRef.child('players/' + MP.playerIndex).update({
-      ready: true,
-      teamName: teamName
-    });
-    showStatus('Waiting for opponent to ready up...');
-  };
-
-  function showCoinToss(youGoFirst) {
-    showOverlay(
-      '<h2>COIN TOSS</h2>' +
-      '<p class="mp-big">' + (youGoFirst ? 'YOU GO FIRST!' : MP.opponentName + ' GOES FIRST') + '</p>' +
-      '<p>Get ready...</p>'
-    );
-  }
 
   // ── UI: Turn Banner ─────────────────────────────────────
   function showTurnBanner(text) {
@@ -665,8 +617,8 @@
       document.body.appendChild(bar);
     }
     bar.innerHTML = '<span>YOU: <b>' + MP.myTotalScore + '</b></span>' +
-      '<span>Q' + MP.quarter + ' | Drive ' + (MP.driveNum + 1) + '</span>' +
-      '<span>' + MP.opponentName + ': <b>' + MP.opponentTotalScore + '</b></span>';
+      '<span>Drive ' + (MP.driveNum + 1) + '</span>' +
+      '<span>' + (MP.opponentName || 'OPP') + ': <b>' + MP.opponentTotalScore + '</b></span>';
     bar.style.display = 'flex';
   }
 
@@ -686,7 +638,7 @@
 
       var label = document.createElement('div');
       label.className = 'mp-spectate-label';
-      label.textContent = MP.opponentName + ' IS PLAYING...';
+      label.textContent = (MP.opponentName || 'OPPONENT') + ' IS PLAYING OFFENSE...';
       container.appendChild(label);
 
       var cv = document.createElement('canvas');
@@ -702,7 +654,7 @@
       MP.spectateCtx.fillRect(0, 0, 480, 270);
     } else {
       var label2 = container.querySelector('.mp-spectate-label');
-      if (label2) label2.textContent = MP.opponentName + ' IS PLAYING...';
+      if (label2) label2.textContent = (MP.opponentName || 'OPPONENT') + ' IS PLAYING OFFENSE...';
     }
     container.style.display = 'flex';
   }
@@ -729,7 +681,7 @@
       '<p class="mp-big">' + resultText + '</p>' +
       '<div class="mp-final-scores">' +
         '<div>YOU: <b>' + MP.myTotalScore + '</b></div>' +
-        '<div>' + MP.opponentName + ': <b>' + MP.opponentTotalScore + '</b></div>' +
+        '<div>' + (MP.opponentName || 'OPP') + ': <b>' + MP.opponentTotalScore + '</b></div>' +
       '</div>' +
       '<button class="mp-btn" onclick="MP.backToMenu()">BACK TO MENU</button>'
     );
@@ -746,7 +698,6 @@
     hideScorebar();
     hideSpectateView();
     cleanupListeners();
-    // Clean up room if we created it and no one joined
     if (roomRef) {
       roomRef.child('players/' + MP.playerIndex).remove();
       roomRef = null;
@@ -755,7 +706,7 @@
     MP.playerIndex = -1;
   };
 
-  // ── TWO PLAYER Button (shown on home screen) ───────────
+  // ── TWO PLAYER Button ──────────────────────────────────
   function createMPButton() {
     var btn = document.createElement('button');
     btn.id = 'mp-lobby-btn';
@@ -780,14 +731,12 @@
     }, 500);
   }
 
-  // ── Room Cleanup (delete old rooms) ─────────────────────
+  // ── Room Cleanup ───────────────────────────────────────
   function cleanupOldRooms() {
     if (!db) return;
-    var cutoff = Date.now() - 30 * 60 * 1000; // 30 min
+    var cutoff = Date.now() - 30 * 60 * 1000;
     db.ref('rooms').orderByChild('createdAt').endAt(cutoff).once('value', function (snap) {
-      snap.forEach(function (child) {
-        child.ref.remove();
-      });
+      snap.forEach(function (child) { child.ref.remove(); });
     });
   }
 
@@ -798,10 +747,7 @@
         if (typeof _ft !== 'undefined' && typeof _6E2 !== 'undefined') {
           clearInterval(checkReady);
           createMPButton();
-          // Cleanup old rooms occasionally
-          if (initFirebase()) {
-            cleanupOldRooms();
-          }
+          if (initFirebase()) cleanupOldRooms();
         }
       } catch (e) {}
     }, 500);
