@@ -257,10 +257,6 @@
   function startDriveMonitor() {
     stopDriveMonitor();
     MP.driveCycleState = 'idle';
-    MP.lastPossession = -1;
-    MP.lastRoom = -1;
-    MP.lastVy = -1;
-    MP.waitingForPAT = false;
     MP.driveStartScore = getCurrentHumanScore();
 
     MP.matchObjPolling = setInterval(function () {
@@ -283,49 +279,30 @@
 
         var possession = m._UD;
         var humanTeam = m._0z;
-        var vy = m._Vy;
         var scores = m._Sb1;
 
         // State: idle → waiting for human to get the ball
         if (MP.driveCycleState === 'idle') {
-          if (possession === humanTeam && (vy === 2 || vy === 3 || vy === 4 || vy === 1)) {
+          if (possession === humanTeam) {
             MP.driveCycleState = 'human_offense';
             MP.driveStartScore = scores ? scores[humanTeam] : 0;
           } else {
-            hackPossessionBack(m);
+             // Force ball to human on their own 25 yard line to start their drive
+             hackPossessionBack(m);
           }
         }
-
         // State: human_offense → playing, watching for drive end
         else if (MP.driveCycleState === 'human_offense') {
-
-          // Touchdown: wait for PAT/2pt to complete before ending drive
-          if (vy === 10 && MP.lastVy !== 10) {
-            MP.waitingForPAT = true;
-          }
-
-          // PAT/2pt completed — drive is done
-          if (MP.waitingForPAT && (vy === 1 || vy === 2) && MP.lastVy !== 1 && MP.lastVy !== 2) {
-            var pts = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
-            hackPossessionBack(m);
+          
+          // If human loses possession FOR ANY REASON (Interception, Fumble, Punt, FG, post-TD kickoff)
+          // The drive is OVER instantly.
+          if (possession !== humanTeam) {
+            var earned = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
             stopDriveMonitor();
-            endDrive(pts, false);
-            return;
-          }
-
-          // Possession flipped to AI (turnover, punt, FG, downs, etc.)
-          // But NOT if we're waiting for PAT
-          if (!MP.waitingForPAT && possession !== humanTeam && MP.lastPossession === humanTeam) {
-            var pts2 = (scores ? scores[humanTeam] : 0) - MP.driveStartScore;
-            hackPossessionBack(m);
-            stopDriveMonitor();
-            endDrive(pts2, false);
+            endDrive(earned, false);
             return;
           }
         }
-
-        MP.lastPossession = possession;
-        MP.lastVy = vy;
       } catch (e) {}
     }, 200);
   }
@@ -353,6 +330,11 @@
   function endDrive(pointsThisDrive, gameEnded) {
     stopFrameCapture();
     blockInput();
+
+    // The user EXPLICITLY requested the screen must turn black immediately upon turnover. 
+    // Do not wait for Firebase event syncing.
+    MP.gamePhase = 'spectating';
+    showSpectateView();
 
     if (!roomRef) return;
 
