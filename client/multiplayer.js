@@ -469,6 +469,7 @@
   function wrapHandler(realFn) {
     return function (e) {
       if (overlayVisible) return;
+      if (MP.gamePhase === 'spectating') return;
       if (realFn) return realFn.apply(this, arguments);
     };
   }
